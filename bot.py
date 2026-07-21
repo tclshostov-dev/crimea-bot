@@ -13,6 +13,7 @@ DB_PATH = "crimea_bot.db"
 
 
 def init_db():
+  """Расширенная база данных: Город + Настройки подписок (Свет, Вода, МАКС)"""
   conn = sqlite3.connect(DB_PATH)
   cursor = conn.cursor()
   cursor.execute("""
@@ -20,6 +21,9 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             city TEXT,
+            notify_light INTEGER DEFAULT 1,
+            notify_water INTEGER DEFAULT 1,
+            notify_max INTEGER DEFAULT 1,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -45,6 +49,32 @@ def save_user_city(user_id: int, username: str, city: str):
   conn.close()
 
 
+def get_user(user_id: int):
+  conn = sqlite3.connect(DB_PATH)
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT city, notify_light, notify_water, notify_max FROM users WHERE"
+      " user_id = ?",
+      (user_id,),
+  )
+  row = cursor.fetchone()
+  conn.close()
+  return row
+
+
+def toggle_setting(user_id: int, field: str):
+  conn = sqlite3.connect(DB_PATH)
+  cursor = conn.cursor()
+  cursor.execute(
+      f"UPDATE users SET {field} = CASE WHEN {field} = 1 THEN 0 ELSE 1 END"
+      " WHERE user_id = ?",
+      (user_id,),
+  )
+  conn.commit()
+  conn.close()
+
+
+# Клавиатура выбора городов
 def get_cities_keyboard():
   return InlineKeyboardMarkup(
       inline_keyboard=[
@@ -60,9 +90,29 @@ def get_cities_keyboard():
                   text="🏛 Симферополь", callback_data="city_Симферополь"
               ),
           ],
+      ]
+  )
+
+
+# Меню управления подписками (Свет, Вода, МАКС)
+def get_dashboard_keyboard(user_data):
+  city, light, water, max_net = user_data
+  l_btn = "✅ Свет" if light else "❌ Свет"
+  w_btn = "✅ Вода" if water else "❌ Вода"
+  m_btn = "✅ Сеть МАКС" if max_net else "❌ Сеть МАКС"
+
+  return InlineKeyboardMarkup(
+      inline_keyboard=[
+          [
+              InlineKeyboardButton(text=l_btn, callback_data="toggle_light"),
+              InlineKeyboardButton(text=w_btn, callback_data="toggle_water"),
+          ],
+          [
+              InlineKeyboardButton(text=m_btn, callback_data="toggle_max"),
+          ],
           [
               InlineKeyboardButton(
-                  text="⚙️ Сменить город", callback_data="change_city"
+                  text="⚙️ Изменить город", callback_data="change_city"
               )
           ],
       ]
@@ -71,17 +121,26 @@ def get_cities_keyboard():
 
 async def cmd_start(message: types.Message):
   init_db()
-  await message.answer(
-      "⚡💧 **Крымский Монитор Систем**\n\n"
-      "Выбери свой город, чтобы получать уведомления об отключениях:",
-      reply_markup=get_cities_keyboard(),
-      parse_mode="Markdown",
-  )
+  user = get_user(message.from_user.id)
+
+  if not user or not user[0]:
+    await message.answer(
+        "⚡💧🌐 **Крым Монитор: Свет | Вода | Сеть МАКС**\n\n"
+        "Выбери свой город для точечных оповещений об авариях:",
+        reply_markup=get_cities_keyboard(),
+        parse_mode="Markdown",
+    )
+  else:
+    await message.answer(
+        f"📍 **Твой город: {user[0]}**\n\nУправляй категориями уведомлений:",
+        reply_markup=get_dashboard_keyboard(user),
+        parse_mode="Markdown",
+    )
 
 
-async def process_city_callback(callback: types.CallbackQuery):
+async def process_callbacks(callback: types.CallbackQuery):
+  user_id = callback.from_user.id
   data = callback.data
-  user = callback.from_user
 
   if data == "change_city":
     await callback.message.edit_text(
@@ -91,14 +150,32 @@ async def process_city_callback(callback: types.CallbackQuery):
     return
 
   if data.startswith("city_"):
-    selected_city = data.split("_")[1]
-    save_user_city(user.id, user.username or "нет_username", selected_city)
+    city = data.split("_")[1]
+    save_user_city(user_id, callback.from_user.username or "none", city)
+    user = get_user(user_id)
     await callback.message.edit_text(
-        f"✅ **Город зафиксирован: {selected_city}**\n\n"
-        f"Как только появится инфа по {selected_city}, бот пришлет молнию.",
+        f"✅ **Город сохранен: {city}**\n\nНастрой нужные каналы уведомлений:",
+        reply_markup=get_dashboard_keyboard(user),
         parse_mode="Markdown",
     )
-    await callback.answer(f"Сохранено: {selected_city}")
+    await callback.answer()
+    return
+
+  # Переключение тумблеров (Свет, Вода, МАКС)
+  if data.startswith("toggle_"):
+    field_map = {
+        "toggle_light": "notify_light",
+        "toggle_water": "notify_water",
+        "toggle_max": "notify_max",
+    }
+    field = field_map.get(data)
+    if field:
+      toggle_setting(user_id, field)
+      user = get_user(user_id)
+      await callback.message.edit_reply_markup(
+          reply_markup=get_dashboard_keyboard(user)
+      )
+      await callback.answer("Настройка обновлена!")
 
 
 async def main():
@@ -108,12 +185,9 @@ async def main():
   dp = Dispatcher()
 
   dp.message.register(cmd_start, Command("start"))
-  dp.callback_query.register(
-      process_city_callback,
-      F.data.startswith("city_") | (F.data == "change_city"),
-  )
+  dp.callback_query.register(process_callbacks)
 
-  print("🚀 Бот запущен!")
+  print("🚀 Единый Монитор (TG + Сеть МАКС) запущен!")
   await dp.delete_webhook(drop_pending_updates=True)
   await dp.start_polling(bot)
 
