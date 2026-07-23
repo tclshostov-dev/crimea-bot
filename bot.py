@@ -188,7 +188,7 @@ async def main():
   dp.callback_query.register(process_callbacks)
 
   print("🚀 Единый Монитор (TG + Сеть МАКС) запущен!")
-  await dp.delete_webhook(drop_pending_updates=True)
+  await bot.delete_webhook(drop_pending_updates=True)
   await dp.start_polling(bot)
 
 
